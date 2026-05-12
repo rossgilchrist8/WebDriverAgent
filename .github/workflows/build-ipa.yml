@@ -8,8 +8,10 @@ name: Build WDA IPA
       runs-on: macos-latest
       steps:
         - uses: actions/checkout@v4
+          with:
+            ref: 'v4.16.16'
 
-        - name: Build unsigned IPA
+        - name: Build WDA runner
           run: |
             xcodebuild build-for-testing \
               -project WebDriverAgent.xcodeproj \
@@ -20,8 +22,14 @@ name: Build WDA IPA
               CODE_SIGNING_REQUIRED=NO \
               CODE_SIGNING_ALLOWED=NO
 
+        - name: Package IPA
+          run: |
+            APP=$(find DerivedData/Build/Products/Debug-iphoneos -name "WebDriverAgentRunner-Runner.app" |   
+  head -1)
+            echo "App path: $APP"
+            ls "$APP/PlugIns" && echo "PlugIns OK" || echo "WARNING: no PlugIns"
             mkdir -p Payload
-            cp -r DerivedData/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app Payload/
+            cp -r "$APP" Payload/
             zip -r WebDriverAgentRunner.ipa Payload/
 
         - name: Upload IPA
