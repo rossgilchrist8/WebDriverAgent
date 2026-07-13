@@ -57,16 +57,17 @@ jobs:
           APP=$(find wda_derived/Build/Products -type d -name 'WebDriverAgentRunner-Runner.app' | head -n 1)
           echo "Found app: $APP"
           test -n "$APP"
-          # Helpful for some Sideload/launch paths on older iOS: strip embedded XC*.framework
-          if [ -d "$APP/Frameworks" ]; then
-            rm -rf "$APP"/Frameworks/XC*.framework || true
-          fi
+          # iOS 15 NEEDS embedded XC*.framework inside the app.
+          # Do NOT strip them (stripping is an iOS 17+ trick and causes XCTest 103 on iOS 15).
+          echo "Frameworks present:"
+          ls -la "$APP/Frameworks" 2>/dev/null || echo "(no Frameworks dir)"
+          echo "PlugIns present:"
+          ls -la "$APP/PlugIns" 2>/dev/null || echo "(no PlugIns dir — BAD for XCTest)"
           rm -rf Payload WebDriverAgent-iOS15.ipa
           mkdir Payload
           cp -R "$APP" Payload/
           zip -qr WebDriverAgent-iOS15.ipa Payload
           ls -lh WebDriverAgent-iOS15.ipa
-          # Sanity: print MinimumOSVersion if plutil available
           /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' Payload/WebDriverAgentRunner-Runner.app/Info.plist || true
 
       - name: Upload IPA artifact
