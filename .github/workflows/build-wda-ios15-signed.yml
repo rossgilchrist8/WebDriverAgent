@@ -3,13 +3,10 @@
 # GitHub Secrets on your FORK:
 #   BUILD_CERTIFICATE_BASE64
 #   P12_PASSWORD
-#   BUILD_PROVISION_PROFILE_BASE64  - profile for App ID:
-#       com.YOURNAME.WebDriverAgentRunner.xctrunner
-#     (or a wildcard com.YOURNAME.*) — NOT the bare …WebDriverAgentRunner id
+#   BUILD_PROVISION_PROFILE_BASE64  - wildcard App ID e.g. com.YOURNAME.*
+#                                   (covers …WebDriverAgentRunner.xctrunner)
 #   KEYCHAIN_PASSWORD
 #   APPLE_TEAM_ID
-#
-# Why .xctrunner: Xcode packages UI-test runners as PRODUCT_BUNDLE_IDENTIFIER + ".xctrunner".
 
 name: Build WDA iOS15 SIGNED IPA
 
@@ -47,10 +44,37 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
           security list-keychain -d user -s $KEYCHAIN_PATH
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print UUID" /dev/stdin <<< $(security cms -D -i $PP_PATH))
+          PROFILE_PLIST=$(mktemp)
+          security cms -D -i $PP_PATH > "$PROFILE_PLIST"
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print UUID" "$PROFILE_PLIST")
+          PROFILE_NAME=$(/usr/libexec/PlistBuddy -c "Print Name" "$PROFILE_PLIST")
           cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/$PROFILE_UUID.mobileprovision
-          echo "PROFILE_UUID=$PROFILE_UUID"
-          security cms -D -i $PP_PATH | grep -A2 application-identifier || true
+          echo "PROFILE_UUID=$PROFILE_UUID" >> $GITHUB_ENV
+          echo "PROFILE_NAME=$PROFILE_NAME" >> $GITHUB_ENV
+          echo "Installed profile: $PROFILE_NAME ($PROFILE_UUID)"
+          /usr/libexec/PlistBuddy -c "Print Entitlements:application-identifier" "$PROFILE_PLIST"
+
+      - name: Disable signing on WebDriverAgentLib
+        run: |
+          set -euo pipefail
+          # Static lib cannot take a provisioning profile; force it off in pbxproj.
+          python3 <<'PY'
+          from pathlib import Path
+          path = Path("WebDriverAgent.xcodeproj/project.pbxproj")
+          text = path.read_text()
+          # Ensure every build-settings block that is for the lib target gets CODE_SIGNING_ALLOWED=NO.
+          # Safer blunt approach: after every "buildSettings = {" insert the keys if missing near
+          # PRODUCT_NAME = WebDriverAgentLib occurrences is hard; instead inject globally for
+          # Debug/Release of the lib via known marker.
+          needle = "PRODUCT_NAME = WebDriverAgentLib;"
+          if needle not in text:
+              raise SystemExit("WebDriverAgentLib PRODUCT_NAME not found")
+          # Insert CODE_SIGNING_ALLOWED = NO before each PRODUCT_NAME = WebDriverAgentLib;
+          insert = "CODE_SIGNING_ALLOWED = NO;\n\t\t\t\tPROVISIONING_PROFILE_SPECIFIER = \"\";\n\t\t\t\t"
+          out = text.replace(needle, insert + needle)
+          path.write_text(out)
+          print("Patched WebDriverAgentLib signing off")
+          PY
 
       - name: Build signed WebDriverAgentRunner
         run: |
@@ -58,10 +82,8 @@ jobs:
           DERIVED="$PWD/wda_derived"
           BUNDLE_ID="${WDA_BUNDLE_ID:-com.rossgilchrist.WebDriverAgentRunner}"
           TEAM_ID="${{ secrets.APPLE_TEAM_ID }}"
-          echo "Using PRODUCT_BUNDLE_IDENTIFIER=$BUNDLE_ID (runner app will be ${BUNDLE_ID}.xctrunner)"
-          echo "Using DEVELOPMENT_TEAM=$TEAM_ID"
-          # Do NOT pass PROVISIONING_PROFILE globally — WebDriverAgentLib rejects it.
-          # Automatic + team + installed profile lets Xcode match the .xctrunner App ID.
+          echo "BUNDLE_ID=$BUNDLE_ID (app will be ${BUNDLE_ID}.xctrunner)"
+          echo "TEAM=$TEAM_ID PROFILE=$PROFILE_NAME ($PROFILE_UUID)"
           xcodebuild build-for-testing \
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner \
@@ -70,8 +92,10 @@ jobs:
             -configuration Debug \
             IPHONEOS_DEPLOYMENT_TARGET=15.0 \
             DEVELOPMENT_TEAM="$TEAM_ID" \
-            CODE_SIGN_STYLE=Automatic \
+            CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="Apple Development" \
+            PROVISIONING_PROFILE="$PROFILE_UUID" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
             PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
             GCC_TREAT_WARNINGS_AS_ERRORS=NO \
             COMPILER_INDEX_STORE_ENABLE=NO
