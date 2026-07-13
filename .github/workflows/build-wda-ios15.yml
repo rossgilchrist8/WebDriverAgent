@@ -1,0 +1,77 @@
+# Build WebDriverAgent for real devices (iOS 15+) without a local Mac.
+# Drop this file into YOUR FORK of https://github.com/appium/WebDriverAgent as:
+#   .github/workflows/build-wda-ios15.yml
+#
+# Then: Actions → run workflow → download the IPA artifact → Sideloadly on Windows.
+#
+# Note: `npm run bundle` in Appium WDA only builds SIMULATOR zips.
+# This workflow builds a REAL-DEVICE Runner.app for Sideloadly.
+
+name: Build WDA iOS15 Sideload IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [wda-ios15]
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          # Pin if the default image breaks deployment target 15
+          xcode-version: latest-stable
+
+      - name: Show Xcode / SDKs
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks
+
+      - name: Build WebDriverAgentRunner (unsigned, deployment 15.0)
+        run: |
+          set -euo pipefail
+          DERIVED="$PWD/wda_derived"
+          mkdir -p "$DERIVED"
+          xcodebuild build-for-testing \
+            -project WebDriverAgent.xcodeproj \
+            -scheme WebDriverAgentRunner \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$DERIVED" \
+            -configuration Debug \
+            IPHONEOS_DEPLOYMENT_TARGET=15.0 \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            GCC_TREAT_WARNINGS_AS_ERRORS=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO
+
+      - name: Package IPA for Sideloadly
+        run: |
+          set -euo pipefail
+          APP=$(find wda_derived/Build/Products -type d -name 'WebDriverAgentRunner-Runner.app' | head -n 1)
+          echo "Found app: $APP"
+          test -n "$APP"
+          # Helpful for some Sideload/launch paths on older iOS: strip embedded XC*.framework
+          if [ -d "$APP/Frameworks" ]; then
+            rm -rf "$APP"/Frameworks/XC*.framework || true
+          fi
+          rm -rf Payload WebDriverAgent-iOS15.ipa
+          mkdir Payload
+          cp -R "$APP" Payload/
+          zip -qr WebDriverAgent-iOS15.ipa Payload
+          ls -lh WebDriverAgent-iOS15.ipa
+          # Sanity: print MinimumOSVersion if plutil available
+          /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' Payload/WebDriverAgentRunner-Runner.app/Info.plist || true
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WebDriverAgent-iOS15
+          path: WebDriverAgent-iOS15.ipa
+          if-no-files-found: error
